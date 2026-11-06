@@ -119,6 +119,62 @@ fn test_core() -> (Arc<Core>, PathBuf) {
     (core, root)
 }
 
+#[test]
+fn a_removed_terminal_leaves_no_state_behind() {
+    let (core, root) = test_core();
+    let leftovers = {
+        let mut st = core.lock();
+        let id =
+            st.reg.create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0).unwrap();
+        st.reg.finish(id, Some(0), None, "exited", now_ms());
+        st.gates.insert(id, Default::default());
+        st.queues.insert(id, Default::default());
+        st.output_watch.insert(id, vec![tokio::sync::mpsc::unbounded_channel().0]);
+        st.last_output.insert(id, Instant::now());
+        st.output_seq.insert(id, 1);
+        st.stitched.insert(id, Default::default());
+        st.messages.insert(id, None);
+        st.last_send.insert(("caller".into(), id), 1);
+        core.remove(&mut st, id);
+        [
+            st.gates.contains_key(&id),
+            st.queues.contains_key(&id),
+            st.output_watch.contains_key(&id),
+            st.last_output.contains_key(&id),
+            st.output_seq.contains_key(&id),
+            st.stitched.contains_key(&id),
+            st.messages.contains_key(&id),
+            st.last_send.keys().any(|(_, t)| *t == id),
+        ]
+    };
+    drop(core);
+    remove_root(&root);
+    assert_eq!(
+        leftovers, [false; 8],
+        "gates, queues, output_watch, last_output, output_seq, stitched, messages, last_send"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_send_with_no_holder_link_is_refused_not_reported_sent() {
+    let (core, root) = test_core();
+    let id = {
+        let mut st = core.lock();
+        let id =
+            st.reg.create(crate::terminals::NewTerminal { argv: vec!["sh".into()], ..Default::default() }, 0).unwrap();
+        st.reg.terminals.get_mut(&id).unwrap().holder = Some("gone".into());
+        st.screens.insert(id, Screen::new(80, 24, 1 << 20));
+        id
+    };
+    let sent = core.send(id, "hello", false, None).await;
+    // A busy gate would hold a person's keys instead of passing them on.
+    let passed = core.lock().gates.entry(id).or_default().viewer(b"x", true);
+    drop(core);
+    remove_root(&root);
+    assert_eq!(sent.err().map(|e| e.kind), Some("unavailable".to_string()));
+    assert_eq!(passed, b"x", "a refused send must not leave the gate busy");
+}
+
 #[tokio::test]
 async fn label_and_kill_reply_with_the_record_observed_before_flushing() {
     for method in ["terminal.kill", "terminal.label"] {
