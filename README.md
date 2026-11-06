@@ -108,6 +108,7 @@ Programs and files stay on that machine. Your local core brings its terminals in
 An agent can say it is working, done, blocked, or in error through OSC 7501, the Program Status Protocol.
 Core stores what it reports. It does not guess from screen text or recognize agent brands.
 A program that does not report status has none.
+For Claude Code, [hooks](integrations/claude-code/README.md) report it.
 
 Use `hc get review` for a snapshot or `hc events` to follow changes.
 
