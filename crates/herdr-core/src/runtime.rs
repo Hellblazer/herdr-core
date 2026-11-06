@@ -779,6 +779,15 @@ impl Core {
         self.emit_from(st, "removed", id, serde_json::json!({}), Some(&was));
         let _ = std::fs::remove_file(self.snapshot_path(id));
         let _ = std::fs::remove_dir_all(crate::put::dir(&self.paths.state, id));
+        // Ids never come back, so whatever is kept by id would only pile up.
+        st.gates.remove(&id);
+        st.queues.remove(&id);
+        st.output_watch.remove(&id);
+        st.last_output.remove(&id);
+        st.output_seq.remove(&id);
+        st.stitched.remove(&id);
+        st.messages.remove(&id);
+        st.last_send.retain(|(_, t), _| *t != id);
         self.save(st);
     }
 

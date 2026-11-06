@@ -76,6 +76,15 @@ pub fn quiet() -> Duration {
     env_ms("HC_QUIET_MS", 3000)
 }
 
+/// The terminal is live but its holder isn't connected, so nothing typed would arrive.
+fn unlinked(id: u32) -> RpcError {
+    RpcError::new(
+        "unavailable",
+        format!("{} has no holder connected right now", crate::terminals::address(id)),
+        "retry shortly",
+    )
+}
+
 /// How long `send` watches for the program to start working.
 fn started_window() -> Duration {
     env_ms("HC_STARTED_MS", 5000)
@@ -137,27 +146,38 @@ impl Core {
                 )
             })?;
             t.check_program()?;
+            if st.link(id).is_none() {
+                return Err(unlinked(id));
+            }
             let prepared = prepare(&st, t)?;
             st.gates.entry(id).or_default().busy = true;
             prepared
         };
+        // Typing stops at the first step the holder can't take: what was
+        // written is all that is claimed.
+        let mut delivered = true;
         for step in steps {
             match step {
                 Step::FirstTask(bytes) => {
                     let mut st = self.lock();
-                    if st.link(id).is_some() {
-                        if let Some(t) = st.reg.terminals.get_mut(&id) {
-                            t.first_task_turn = Some(t.turn);
-                        }
-                        st.link(id).expect("delivery link").input(id, &bytes);
-                        self.save(&st);
-                        self.changed.notify_waiters();
+                    let Some(link) = st.link(id) else {
+                        delivered = false;
+                        break;
+                    };
+                    link.input(id, &bytes);
+                    if let Some(t) = st.reg.terminals.get_mut(&id) {
+                        t.first_task_turn = Some(t.turn);
                     }
+                    self.save(&st);
+                    self.changed.notify_waiters();
                 }
                 Step::Write(bytes) => {
-                    if let Some(link) = self.lock().link(id) {
-                        link.input(id, &bytes);
-                    }
+                    let st = self.lock();
+                    let Some(link) = st.link(id) else {
+                        delivered = false;
+                        break;
+                    };
+                    link.input(id, &bytes);
                 }
                 Step::Pause(d) => tokio::time::sleep(d).await,
             }
@@ -168,7 +188,7 @@ impl Core {
         if let Some(link) = st.link(id) {
             link.input(id, &held);
         }
-        Ok(out)
+        if delivered { Ok(out) } else { Err(unlinked(id)) }
     }
 
     /// Paste + Enter, after a person has paused typing. Refuses a blocked
